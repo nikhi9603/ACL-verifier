@@ -2,7 +2,7 @@
 
 A policy-driven verification engine for **Headscale/Tailscale** ACLs. This tool ensures that your software-defined network isolation matches your intended security posture through Automated Test Pattern Generation (ATPG).
 
-## 🚀 The Mission
+## The Mission
 In a multi-tenant Cyber Range environment, a single misconfigured ACL rule can leak sensitive management subnets to student environments. This project eliminates "manual spot-checking" by treating network policies as verifiable code.
 
 * **Generates** Headscale-compatible huJSON policies from a source-of-truth database.
@@ -11,7 +11,7 @@ In a multi-tenant Cyber Range environment, a single misconfigured ACL rule can l
 
 ---
 
-## 🏗️ Project Structure
+## Project Structure
 ```text
 .
 ├── acl_generator
@@ -32,7 +32,7 @@ In a multi-tenant Cyber Range environment, a single misconfigured ACL rule can l
 
 ---
 
-## 🛠️ How it Works
+## How it Works
 
 ### 1. Policy Generation
 The `ACLGenerator` reads active users and their allocated subnets to create a **deny-by-default** policy.
@@ -46,7 +46,7 @@ The `PolicyAwareExecutor` models Headscale's forwarding semantics. It evaluates 
 
 ---
 
-## 🚦 Getting Started
+## Getting Started
 
 ### Prerequisites
 * Python 3.12+
@@ -68,7 +68,7 @@ PYTHONPATH=. python3 probe_executor/policy_executor.py
 
 ---
 
-## 📊 Sample Output
+## Sample Output
 When a violation is detected (e.g., a student gains access to the management subnet), the reporter flags it immediately:
 
 ```text
@@ -79,7 +79,7 @@ When a violation is detected (e.g., a student gains access to the management sub
 
 ---
 
-## 🔐 Security Invariants
+## Security Invariants
 This tool enforces the following invariants:
 1. **Student Isolation:** No student-to-student traffic.
 2. **Management Cloaking:** Management subnets are unreachable by non-admin roles.
@@ -87,7 +87,7 @@ This tool enforces the following invariants:
 
 ---
 
-## 🤝 Contributing
+## Contributing
 1. Open a Feature Branch.
 2. Ensure `policy_executor` passes with 0 violations.
 3. Open a Pull Request for review.
