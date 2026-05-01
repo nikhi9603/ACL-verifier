@@ -16,8 +16,6 @@ class ACLGenerator:
     def generate(self) -> HeadscalePolicy:
         acls = []
         active_users = self.db.get_active_users()
-        # NOTE: u.role is a UserRole enum — must compare against UserRole.ADMIN,
-        # not the string "admin". Comparing against a string silently never matches.
         admins = [u for u in active_users if u.role == UserRole.ADMIN]
         regular_users = [u for u in active_users if u.role != UserRole.ADMIN]
 

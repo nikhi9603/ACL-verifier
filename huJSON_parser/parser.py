@@ -1,13 +1,17 @@
 """
 huJSON Parser for Headscale ACL files.
 Strips // line comments and /* block comments */  then deserialises into 'HeadscalePolicy' dataclass
+Warns user if required src and dst formats are not present in ACL and removes such src/dst in rules. (Mostly include infrastructure rules)
 Assumption: Parser getting valid huJSON file as input
 """
 
 import json
 import re
-from typing import Optional
-from acl_generator.generator import ACLRule, HeadscalePolicy
+import ipaddress
+from models.policy import ACLRule, HeadscalePolicy
+from acl_generator.generator import ACLGenerator
+from synthetic_data.generator import generate_synthetic_db
+from static_policy_checker.policy_checker import StaticPolicyChecker
 
 class huJSON_Parser:
     def __init__(self, file_path: str):
@@ -23,13 +27,7 @@ class huJSON_Parser:
 
             # Parsing within string
             if in_string:
-                if ch == '\\':   # escape char: add next char to it also directly (To avoid \" sequences and identify as end of string)
-                    result_text.append(ch)
-                    idx += 1
-                    if idx < len(text):
-                        result_text.append(ch)
-                        idx += 1
-                elif ch == '"':
+                if ch == '"':
                     in_string = False       # mark as end of string
                     result_text.append(ch)
                     idx += 1
@@ -63,16 +61,52 @@ class huJSON_Parser:
         # print(stripped_comments_text)
         # print("---------------------------")
         clean_text = self._remove_trailing_commas(stripped_comments_text)
+        # print(clean_text)
         return clean_text
+    
+    def _is_valid_src(self, entry: str) -> bool:
+        # Valid src: 'username@' format only.
+        if entry.endswith("@") and entry != "@":
+            return True
+        return False
+    
+    def _is_valid_dst(self, entry: str) -> bool:
+        # Valid dst: 'cidr:port', 'cidr:*', bare 'cidr' format only
+        try:
+            addr = entry.rsplit(":", 1)[0] if ":" in entry else entry
+            ipaddress.ip_network(addr, strict=False)
+            return True
+        except ValueError:
+            return False
     
     def _json_to_HeadScalePolicy(self, json_dict: dict) -> HeadscalePolicy:
         tag_owners = json_dict.get("tagOwners", {})
         auto_approvers = json_dict.get("autoApprovers", {})
         hosts = json_dict.get("hosts")
         acls = []
-        for rule_dict in json_dict.get("acls", []):
+
+        for i, rule_dict in enumerate(json_dict.get("acls", [])):
+            raw_src = rule_dict.get("src", [])
+            raw_dst = rule_dict.get("dst", [])
+
+            valid_src = [src for src in raw_src if self._is_valid_src(src)]
+            valid_dst = [dst for dst in raw_dst if self._is_valid_dst(dst)]
+
+            invalid_src = [src for src in raw_src if not self._is_valid_src(src)]
+            invalid_dst = [dst for dst in raw_dst if not self._is_valid_dst(dst)]
+
+            if len(invalid_src) > 0:
+                print(f"[PARSER WARNING] Rule {i}: unexpected src format skipped: {invalid_src}")
+            if len(invalid_dst) > 0:
+                print(f"[PARSER WARNING] Rule {i}: unexpected src format skipped: {invalid_dst}")
+            
+            if not valid_src or not valid_dst:
+                print(f"[PARSER WARNING] Rule {i}: skipped entirely - no valid src or dst")
+                continue
+
             acls.append(ACLRule(action=rule_dict.get("action", "accept"), 
-                                src=rule_dict.get("src", []), dst=rule_dict.get("dst", []), 
+                                src=valid_src, 
+                                dst=valid_dst, 
                                 proto=rule_dict.get("proto")))
         
         return HeadscalePolicy(tag_owners=tag_owners, acls=acls, auto_approvers=auto_approvers, hosts=hosts)
@@ -82,14 +116,30 @@ class huJSON_Parser:
             file_text = f.read()
         
         cleaned_file_text = self._parse_hujson_text(file_text)
-        # print(cleaned_file_text)
         json_dict = json.loads(cleaned_file_text)
         headscalePolicy = self._json_to_HeadScalePolicy(json_dict)
         return headscalePolicy
     
-# if __name__ == "__main__":
-#     acl_filepath = "sample_acl.txt"
-#     parser = huJSON_Parser(acl_filepath)
-#     policy = parser.parse()
-    # print(policy.to_dict())
+if __name__ == "__main__":
+    # acl_filepath = "sample_acl2.txt"
+    # parser = huJSON_Parser(acl_filepath)
+    # policy = parser.parse()
+    # print()
+    # # print(policy.to_dict())
     # print(policy.to_hujson())
+
+    db = generate_synthetic_db(num_students=7, num_instructors=2)
+    # generator = ACLGenerator(db)
+    # policy = generator.generate_and_write("sample_acl_generate.txt")
+    # print(policy.to_hujson)
+
+    # Added some random comments to sample acl to verify the parser
+    acl_filepath = "sample_acl_generate.txt"
+    parser = huJSON_Parser(acl_filepath)
+    acl_policy = parser.parse()
+    # print(acl_policy.to_dict())
+    print(acl_policy.to_hujson())
+
+    static_checker = StaticPolicyChecker(db)
+    static_checker_result = static_checker.check(acl_policy)
+    static_checker_result.report()
