@@ -60,13 +60,16 @@ class TestMissingRule:
         assert ViolationType.MISSING_RULE in violation_types(result)
         assert student.headscale_username in usernames_with(result, ViolationType.MISSING_RULE)
 
-    def test_missing_rule_escalates_to_phase2(self, db, policy):
+    def test_missing_rule_does_not_escalate_to_phase2(self, db, policy):
+        """MISSING_RULE is not an isolation failure — user just can't reach anything.
+        Phase 2 localises isolation boundary violations, not reachability failures."""
         student = next(u for u in db.get_active_users() if u.role.STUDENT == u.role)
         faulty = remove_rule_for(student.headscale_username, policy)
 
         result = StaticPolicyChecker(db).check(faulty)
 
-        assert student.headscale_username in result.flagged_users
+        assert ViolationType.MISSING_RULE in [v.violation_type for v in result.violations]
+        assert student.headscale_username not in result.flagged_users
 
     def test_all_rules_missing(self, db, policy):
         """Every student's rule removed — one MISSING_RULE per student."""
@@ -252,7 +255,9 @@ class TestDuplicateRules:
         assert student.headscale_username in usernames_with(
             result, ViolationType.DUPLICATE_RULES)
 
-    def test_duplicate_rules_escalates_to_phase2(self, db, policy):
+    def test_duplicate_rules_does_not_escalate_to_phase2(self, db, policy):
+        """DUPLICATE_RULES doesn't grant extra access on its own — not an isolation
+        failure, so it should not be escalated to Phase 2."""
         student = next(u for u in db.get_active_users() if u.role.STUDENT == u.role)
         subnet = db.get_subnet_for_user(student.id).subnet_cidr
 
@@ -264,7 +269,8 @@ class TestDuplicateRules:
         ))
 
         result = StaticPolicyChecker(db).check(faulty)
-        assert student.headscale_username in result.flagged_users
+        assert ViolationType.DUPLICATE_RULES in [v.violation_type for v in result.violations]
+        assert student.headscale_username not in result.flagged_users
 
 
 # ── ORPHAN_RULE ────────────────────────────────────────────────────────────────

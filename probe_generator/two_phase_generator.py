@@ -19,14 +19,13 @@ Probe counts:
   Typical case:    2N + N + k(N-1)  (k violations, k << N)
 
 IMPORTANT — probes are generated from user_subnet_map (DB ground truth), NOT
-from the ACL. These two inputs must remain independent: a buggy ACL cannot
-influence which probes are generated or what they expect to see.
+from the ACL. A buggy ACL cannot influence which probes are generated or what
+they expect to see.
 """
 
 import ipaddress
 from dataclasses import dataclass, field
 from typing import Optional
-from models.policy import HeadscalePolicy
 
 
 @dataclass
@@ -37,8 +36,9 @@ class Probe:
     dst_port: int
     proto: str
     expected: bool
-    phase: int = 0          # 0=positive, 1=phase1 sweep, 2=phase2 localisation
-    dst_user: Optional[str] = None   # headscale_username of the destination tenant
+    phase: int = 0                    # 0=positive, 1=phase1 sweep, 2=phase2 localisation
+    dst_user: Optional[str] = None    # headscale_username of the destination tenant
+                                      # required by real_executor.py for peer-visibility lookup
     rule_index: Optional[int] = None
     description: str = ""
 
@@ -82,17 +82,18 @@ class TwoPhaseProbeSet:
 class TwoPhaseProbeGenerator:
     HOST_OFFSET = 10
 
-    def __init__(self, policy: HeadscalePolicy, user_subnet_map: dict, tailscale_ip_map: dict = None):
-        self.policy = policy
+    def __init__(self, user_subnet_map: dict):
+        """
+        Args:
+            user_subnet_map: headscale_username → subnet_cidr, from DB ground truth.
+                             Built via DatabaseInterface.get_user_subnet_map().
+                             Deliberately not derived from the ACL — a buggy ACL
+                             must not influence which probes are generated.
+        """
         self.user_subnet_map = user_subnet_map
-        # tailscale_ip_map retained for API compatibility but no longer used
-        # for probe destinations. Probes use subnet IPs with -I tailscale0
-        # to force traffic through the WireGuard tunnel.
-        self.tailscale_ip_map = tailscale_ip_map or {}
 
-    def _representative_ip(self, subnet_cidr: str, username: str = None) -> str:
-        # Always use the .10 representative address. Traffic is forced through
-        # the WireGuard tunnel via -I tailscale0 in the SSH ping command.
+    def _representative_ip(self, subnet_cidr: str) -> str:
+        """Return the .10 representative host IP for a subnet."""
         network = ipaddress.ip_network(subnet_cidr, strict=False)
         return str(network.network_address + self.HOST_OFFSET)
 
@@ -101,26 +102,20 @@ class TwoPhaseProbeGenerator:
         return self._representative_ip(subnet) if subnet else "0.0.0.0"
 
     def _get_user_subnets(self) -> list:
-        """Returns list of (username, subnet) pairs from the DB-derived user_subnet_map.
+        """
+        Returns list of (username, subnet) pairs from user_subnet_map.
 
-        Deliberately reads from user_subnet_map (ground truth from DB), NOT from
-        the ACL. This ensures probe generation is independent of the policy under
-        test — a buggy ACL cannot influence which probes get generated.
-        Guarantees exactly N entries, one per user, giving true O(N) Phase 1.
+        Reads from DB ground truth only — never from the ACL. Guarantees
+        exactly N entries, one per user, giving true O(N) Phase 1.
         """
         return list(self.user_subnet_map.items())
 
     def generate_positive_probes(self) -> list:
-        """2N positive probes — one ICMP + one TCP:22 per user.
-
-        Reads from DB-derived user_subnet_map (ground truth). The expected=True
-        reflects what SHOULD be allowed per the DB isolation model. The executor
-        then checks what the ACL actually permits — a mismatch = reachability failure.
-        """
+        """2N positive probes — one ICMP + one TCP:22 per user."""
         probes = []
         for username, subnet in self.user_subnet_map.items():
             src_ip = self._src_ip_for_user(username)
-            dst_ip = self._representative_ip(subnet, username)
+            dst_ip = self._representative_ip(subnet)
             probes.append(Probe(
                 src_user=username, src_ip=src_ip, dst_ip=dst_ip,
                 dst_port=0, proto="icmp", expected=True, phase=0,
@@ -138,12 +133,7 @@ class TwoPhaseProbeGenerator:
     def generate_phase1_probes(self) -> list:
         """N Phase 1 probes — one per user to ANY other tenant's subnet.
 
-        Cheap O(N) sweep to detect which users have isolation leaks.
-        We pick the next user's subnet as the probe target (arbitrary but consistent).
-
-        Returns empty list if N < 2 — Phase 1 requires at least 2 tenants since
-        there must be another subnet to probe against. With N=1 the modulo wrap
-        would produce a probe against the user's own subnet, which is a false positive.
+        Returns empty list if N < 2 — Phase 1 requires at least 2 tenants.
         """
         user_subnets = self._get_user_subnets()
 
@@ -156,7 +146,7 @@ class TwoPhaseProbeGenerator:
             other_user, other_subnet = user_subnets[other_idx]
 
             src_ip = self._src_ip_for_user(username)
-            dst_ip = self._representative_ip(other_subnet, other_user)
+            dst_ip = self._representative_ip(other_subnet)
 
             probes.append(Probe(
                 src_user=username, src_ip=src_ip, dst_ip=dst_ip,
@@ -170,11 +160,12 @@ class TwoPhaseProbeGenerator:
     def generate_phase2_probes(self, users_with_leaks: list) -> list:
         """Phase 2 — k(N-1) targeted probes.
 
-        Only generated for users who failed Phase 1 (or were flagged by static checker).
-        Tests ALL other subnets (from DB) to localise exactly which boundary is violated.
+        Only generated for users who failed Phase 1 or were flagged by the
+        static checker. Tests ALL other subnets to localise exactly which
+        boundary is violated.
         """
         probes = []
-        user_subnets = self._get_user_subnets()  # DB-derived, exactly N entries
+        user_subnets = self._get_user_subnets()
 
         for leaking_user in users_with_leaks:
             src_ip = self._src_ip_for_user(leaking_user)
@@ -182,7 +173,7 @@ class TwoPhaseProbeGenerator:
             for other_user, other_subnet in user_subnets:
                 if other_user == leaking_user:
                     continue
-                dst_ip = self._representative_ip(other_subnet, other_user)
+                dst_ip = self._representative_ip(other_subnet)
                 probes.append(Probe(
                     src_user=leaking_user, src_ip=src_ip, dst_ip=dst_ip,
                     dst_port=0, proto="icmp", expected=False, phase=2,
@@ -195,9 +186,8 @@ class TwoPhaseProbeGenerator:
     def generate(self, users_with_leaks: Optional[list] = None) -> TwoPhaseProbeSet:
         """Generate the full two-phase probe set.
 
-        If users_with_leaks is None, pre-generates Phase 2 for all users
-        (useful for mock evaluation). In real execution, Phase 2 is only
-        generated after Phase 1 results are known.
+        If users_with_leaks is None, Phase 2 is not pre-generated.
+        In real execution Phase 2 is generated after Phase 1 results are known.
         """
         positive = self.generate_positive_probes()
         phase1 = self.generate_phase1_probes()
@@ -215,15 +205,8 @@ if __name__ == "__main__":
     from acl_generator.generator import ACLGenerator
 
     db = generate_synthetic_db(num_students=5, num_instructors=1)
-    policy = ACLGenerator(db).generate()
-
-    user_subnet_map = {}
-    for user in db.get_active_users():
-        subnet = db.get_subnet_for_user(user.id)
-        if subnet:
-            user_subnet_map[user.headscale_username] = subnet.subnet_cidr
-
-    gen = TwoPhaseProbeGenerator(policy, user_subnet_map)
+    user_subnet_map = db.get_user_subnet_map()
+    gen = TwoPhaseProbeGenerator(user_subnet_map)
 
     print("=== No violations (Phase 2 never triggered) ===")
     probe_set = gen.generate(users_with_leaks=[])
