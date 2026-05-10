@@ -621,7 +621,7 @@ def main():
     tailscale_ip_map = headscale.get_tailscale_ip_map()
 
     # ── Set up probe generator and executors ───────────────────────────────────
-    probe_gen = TwoPhaseProbeGenerator(policy, user_subnet_map, tailscale_ip_map)
+    probe_gen = TwoPhaseProbeGenerator(user_subnet_map)
     ssh_executor = TailscaleStatusExecutor(db, args.ssh_key)
     oracle = PolicyAwareExecutor(policy)
     reporter = PeerVisibilityReporter()
