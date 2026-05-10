@@ -38,6 +38,7 @@ class Probe:
     proto: str
     expected: bool
     phase: int = 0          # 0=positive, 1=phase1 sweep, 2=phase2 localisation
+    dst_user: Optional[str] = None   # headscale_username of the destination tenant
     rule_index: Optional[int] = None
     description: str = ""
 
@@ -81,11 +82,17 @@ class TwoPhaseProbeSet:
 class TwoPhaseProbeGenerator:
     HOST_OFFSET = 10
 
-    def __init__(self, policy: HeadscalePolicy, user_subnet_map: dict):
+    def __init__(self, policy: HeadscalePolicy, user_subnet_map: dict, tailscale_ip_map: dict = None):
         self.policy = policy
         self.user_subnet_map = user_subnet_map
+        # tailscale_ip_map retained for API compatibility but no longer used
+        # for probe destinations. Probes use subnet IPs with -I tailscale0
+        # to force traffic through the WireGuard tunnel.
+        self.tailscale_ip_map = tailscale_ip_map or {}
 
-    def _representative_ip(self, subnet_cidr: str) -> str:
+    def _representative_ip(self, subnet_cidr: str, username: str = None) -> str:
+        # Always use the .10 representative address. Traffic is forced through
+        # the WireGuard tunnel via -I tailscale0 in the SSH ping command.
         network = ipaddress.ip_network(subnet_cidr, strict=False)
         return str(network.network_address + self.HOST_OFFSET)
 
@@ -113,15 +120,17 @@ class TwoPhaseProbeGenerator:
         probes = []
         for username, subnet in self.user_subnet_map.items():
             src_ip = self._src_ip_for_user(username)
-            dst_ip = self._representative_ip(subnet)
+            dst_ip = self._representative_ip(subnet, username)
             probes.append(Probe(
                 src_user=username, src_ip=src_ip, dst_ip=dst_ip,
                 dst_port=0, proto="icmp", expected=True, phase=0,
+                dst_user=username,
                 description=f"{username} -> own subnet {subnet} (should allow)"
             ))
             probes.append(Probe(
                 src_user=username, src_ip=src_ip, dst_ip=dst_ip,
                 dst_port=22, proto="tcp", expected=True, phase=0,
+                dst_user=username,
                 description=f"{username} -> own subnet {subnet}:22 (should allow)"
             ))
         return probes
@@ -131,20 +140,28 @@ class TwoPhaseProbeGenerator:
 
         Cheap O(N) sweep to detect which users have isolation leaks.
         We pick the next user's subnet as the probe target (arbitrary but consistent).
+
+        Returns empty list if N < 2 — Phase 1 requires at least 2 tenants since
+        there must be another subnet to probe against. With N=1 the modulo wrap
+        would produce a probe against the user's own subnet, which is a false positive.
         """
-        probes = []
         user_subnets = self._get_user_subnets()
 
+        if len(user_subnets) < 2:
+            return []
+
+        probes = []
         for i, (username, own_subnet) in enumerate(user_subnets):
             other_idx = (i + 1) % len(user_subnets)
             other_user, other_subnet = user_subnets[other_idx]
 
             src_ip = self._src_ip_for_user(username)
-            dst_ip = self._representative_ip(other_subnet)
+            dst_ip = self._representative_ip(other_subnet, other_user)
 
             probes.append(Probe(
                 src_user=username, src_ip=src_ip, dst_ip=dst_ip,
                 dst_port=0, proto="icmp", expected=False, phase=1,
+                dst_user=other_user,
                 description=f"{username} -> {other_subnet} (isolation sweep, should deny)"
             ))
 
@@ -165,10 +182,11 @@ class TwoPhaseProbeGenerator:
             for other_user, other_subnet in user_subnets:
                 if other_user == leaking_user:
                     continue
-                dst_ip = self._representative_ip(other_subnet)
+                dst_ip = self._representative_ip(other_subnet, other_user)
                 probes.append(Probe(
                     src_user=leaking_user, src_ip=src_ip, dst_ip=dst_ip,
                     dst_port=0, proto="icmp", expected=False, phase=2,
+                    dst_user=other_user,
                     description=f"{leaking_user} -> {other_subnet} (localisation, should deny)"
                 ))
 
