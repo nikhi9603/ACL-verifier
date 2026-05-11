@@ -20,14 +20,14 @@ Verification runs in three stages, each catching a different class of violation.
 
 Structural diff of the ACL against the database. No network access, no SSH. Catches:
 
-| Violation | Description |
-|-----------|-------------|
-| `WRONG_SUBNET` | User's rule points to a subnet not assigned to them |
-| `OVERLY_BROAD_RULE` | Rule covers more than the user's `/24` |
+| Violation              | Description                                                    |
+| ---------------------- | -------------------------------------------------------------- |
+| `WRONG_SUBNET`         | User's rule points to a subnet not assigned to them            |
+| `OVERLY_BROAD_RULE`    | Rule covers more than the user's `/24`                         |
 | `PRIVILEGE_ESCALATION` | Non-admin rule overlaps the management subnet (`10.20.0.0/16`) |
-| `MISSING_RULE` | User has a subnet in DB but no ACL rule |
-| `DUPLICATE_RULES` | User has more than one ACL rule |
-| `ORPHAN_RULE` | ACL rule references a user not in the DB |
+| `MISSING_RULE`         | User has a subnet in DB but no ACL rule                        |
+| `DUPLICATE_RULES`      | User has more than one ACL rule                                |
+| `ORPHAN_RULE`          | ACL rule references a user not in the DB                       |
 
 `WRONG_SUBNET` in particular is invisible to dynamic probing — a user pointing to a non-existent subnet shows zero peers in Phase 1, which looks clean. The static checker catches it before a single SSH call is made.
 
@@ -43,13 +43,15 @@ Only triggered for users who failed Phase 1 or were flagged by the static checke
 
 **Probe count summary:**
 
-| Scenario | Probes |
-|----------|--------|
-| Best case (no violations) | 3N |
-| Typical (k violations, k ≪ N) | 3N + k(N-1) |
-| Worst case (all users violated) | 2N + N² |
-| Naive exhaustive baseline | 254² × N(N-1) |
-| Reduction at N=255 | ~5.4 million× |
+| Scenario                        | Probes        |
+| ------------------------------- | ------------- |
+| Best case (no violations)       | 3N            |
+| Typical (k violations, k ≪ N)   | 3N + k(N-1)   |
+| Worst case (all users violated) | 2N + N²       |
+| Naive exhaustive baseline       | 254² × N(N-1) |
+| Reduction at N=255              | ~5.4 million× |
+
+![Scaling Evaluation](evaluation/scaling_evaluation.png)
 
 ---
 
