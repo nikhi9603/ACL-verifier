@@ -4,18 +4,20 @@ Static Policy Checker.
 Performs structural analysis of a Headscale ACL policy against the DB ground truth
 WITHOUT running any probes. Catches violations that are structurally visible:
 
-  MISSING_RULE       — user has a subnet in DB but no ACL rule
-  WRONG_SUBNET       — user's ACL rule points to a subnet not assigned to them
-  OVERLY_BROAD_RULE  — user's ACL rule covers more than their /24 (e.g. a /16)
-  DUPLICATE_RULES    — user has more than one ACL rule
+  MISSING_RULE         — user has a subnet in DB but no ACL rule
+  WRONG_SUBNET         — user's ACL rule points to a subnet not assigned to them
+  OVERLY_BROAD_RULE    — user's ACL rule covers more than their /24 (e.g. a /16)
+  DUPLICATE_RULES      — user has more than one ACL rule
   PRIVILEGE_ESCALATION — non-admin user has a rule covering the management subnet
-  ORPHAN_RULE        — ACL rule references a user not in the DB
+  ORPHAN_RULE          — ACL rule references a user not in the DB
 
-Static checker feeds directly into Phase 2 — flagged users skip Phase 1 and go
-straight to full boundary localisation. This is the only way to catch WRONG_SUBNET
-before dynamic probing: a user pointing to another tenant's /24 passes the Phase 1
-canary probe (the canary is a different, unallocated subnet) but is structurally
-wrong and must be caught here.
+Phase 2 escalation policy (StaticCheckResult.flagged_users):
+  WRONG_SUBNET, OVERLY_BROAD_RULE, PRIVILEGE_ESCALATION → escalated to Phase 2
+  MISSING_RULE, DUPLICATE_RULES                         → NOT escalated
+    (missing rule = user can't reach anything, not an isolation leak;
+     duplicate rule = doesn't grant extra access on its own)
+  ORPHAN_RULE                                           → NOT escalated
+    (references a non-existent user — no router to SSH into)
 """
 
 import ipaddress
@@ -29,12 +31,12 @@ from models.db_models import UserRole, User
 
 
 class ViolationType(str, Enum):
-    MISSING_RULE        = "MISSING_RULE"
-    WRONG_SUBNET        = "WRONG_SUBNET"
-    OVERLY_BROAD_RULE   = "OVERLY_BROAD_RULE"
-    DUPLICATE_RULES     = "DUPLICATE_RULES"
+    MISSING_RULE         = "MISSING_RULE"
+    WRONG_SUBNET         = "WRONG_SUBNET"
+    OVERLY_BROAD_RULE    = "OVERLY_BROAD_RULE"
+    DUPLICATE_RULES      = "DUPLICATE_RULES"
     PRIVILEGE_ESCALATION = "PRIVILEGE_ESCALATION"
-    ORPHAN_RULE         = "ORPHAN_RULE"
+    ORPHAN_RULE          = "ORPHAN_RULE"
 
 
 @dataclass
@@ -54,15 +56,21 @@ class StaticCheckResult:
     @property
     def flagged_users(self) -> list[str]:
         """
-        Returns list of usernames that should be escalated to Phase 2.
-        ORPHAN_RULE violations flag the rule's username token, not a real DB user,
-        so they are excluded from probe escalation.
+        Returns usernames to escalate to Phase 2 dynamic probing.
+
+        Only violation types that can cause isolation failures are escalated:
+          WRONG_SUBNET       — user may reach another tenant's subnet
+          OVERLY_BROAD_RULE  — rule covers more than one tenant's /24
+          PRIVILEGE_ESCALATION — rule covers management address space
+
+        Excluded:
+          MISSING_RULE    — user can't reach anything; not an isolation leak
+          DUPLICATE_RULES — doesn't grant extra access on its own
+          ORPHAN_RULE     — references a non-existent user; no router to probe
         """
         escalate_types = {
-            ViolationType.MISSING_RULE,
             ViolationType.WRONG_SUBNET,
             ViolationType.OVERLY_BROAD_RULE,
-            ViolationType.DUPLICATE_RULES,
             ViolationType.PRIVILEGE_ESCALATION,
         }
         seen = set()
@@ -158,11 +166,7 @@ class StaticPolicyChecker:
 
         # Build lookup maps from DB
         db_user_map: dict[str, User] = {u.headscale_username: u for u in active_users}
-        db_subnet_map: dict[str, str] = {}  # headscale_username → subnet_cidr
-        for user in active_users:
-            subnet = self.db.get_subnet_for_user(user.id)
-            if subnet:
-                db_subnet_map[user.headscale_username] = subnet.subnet_cidr
+        db_subnet_map: dict[str, str] = self.db.get_user_subnet_map()
 
         # Build a map of username → list of ACL rules that reference them
         acl_rules_by_user: dict[str, list[ACLRule]] = {}
@@ -195,7 +199,7 @@ class StaticPolicyChecker:
                     detail=f"ACL has rule for '{username}' but this user is not in the DB"
                 ))
 
-        # --- Checks 3-6: Per-user rule analysis ---
+        # --- Checks 3–6: Per-user rule analysis ---
         for username, rules in acl_rules_by_user.items():
             if username not in db_user_map:
                 continue  # Already flagged as ORPHAN_RULE above
@@ -203,7 +207,7 @@ class StaticPolicyChecker:
             user = db_user_map[username]
             expected_subnet = db_subnet_map.get(username)
 
-            # Check 3: DUPLICATE_RULES — user has more than one rule
+            # Check 3: DUPLICATE_RULES
             if len(rules) > 1:
                 result.violations.append(StaticViolation(
                     violation_type=ViolationType.DUPLICATE_RULES,
@@ -217,15 +221,16 @@ class StaticPolicyChecker:
                     if not cidr:
                         continue
 
-                    # Check 4: PRIVILEGE_ESCALATION — non-admin pointing to mgmt subnet.
-                    # Tenant /24s (e.g. 10.20.2.0/24) legitimately live inside the
-                    # management /16 by CIDR containment, so we can't just check
-                    # subnet_of(). A violation is: the rule covers the /16 itself or
-                    # any prefix broader than /24 that overlaps the management space.
+                    # Check 4: PRIVILEGE_ESCALATION
+                    # Tenant /24s (e.g. 10.20.2.0/24) legitimately sit inside the
+                    # management /16 by CIDR containment — we can't use subnet_of().
+                    # We use overlaps(): flag any rule broader than /24 that touches
+                    # the management address space at all.
+                    # Note: supernet_of() would be too narrow — it misses cases like
+                    # 10.20.0.0/15 which overlaps but doesn't fully contain the /16.
                     if user.role != UserRole.ADMIN:
                         rule_net = ipaddress.IPv4Network(cidr, strict=False)
                         mgmt_net = ipaddress.IPv4Network(self.MANAGEMENT_SUBNET, strict=False)
-                        # Escalate if: rule is broader than /24 AND overlaps management space
                         if rule_net.prefixlen < 24 and rule_net.overlaps(mgmt_net):
                             result.violations.append(StaticViolation(
                                 violation_type=ViolationType.PRIVILEGE_ESCALATION,
@@ -235,17 +240,17 @@ class StaticPolicyChecker:
                             ))
                             continue
 
-                    # Check 5: OVERLY_BROAD_RULE — covers more than a /24
+                    # Check 5: OVERLY_BROAD_RULE
                     if self._cidr_prefix_len(cidr) < 24:
                         result.violations.append(StaticViolation(
                             violation_type=ViolationType.OVERLY_BROAD_RULE,
                             username=username,
-                            detail=(f"Rule destination {cidr} is broader than /{24} — "
+                            detail=(f"Rule destination {cidr} is broader than /24 — "
                                     f"may grant access to other tenants' subnets")
                         ))
                         continue
 
-                    # Check 6: WRONG_SUBNET — rule points to a subnet not assigned to this user
+                    # Check 6: WRONG_SUBNET
                     if expected_subnet and cidr != expected_subnet:
                         result.violations.append(StaticViolation(
                             violation_type=ViolationType.WRONG_SUBNET,
@@ -268,16 +273,14 @@ if __name__ == "__main__":
     checker = StaticPolicyChecker(db)
 
     print("TEST 1: Clean policy — no violations expected")
-    result = checker.check(policy)
-    result.report()
+    checker.check(policy).report()
 
     print()
     print("TEST 2: Missing rule — student3's rule removed")
     faulty = copy.deepcopy(policy)
     faulty.acls = [r for r in faulty.acls
                    if not (len(r.src) == 1 and r.src[0] == "student3@")]
-    result2 = checker.check(faulty)
-    result2.report()
+    checker.check(faulty).report()
 
     print()
     print("TEST 3: Wrong subnet — student1 points to student2's subnet")
@@ -285,26 +288,23 @@ if __name__ == "__main__":
     for rule in faulty3.acls:
         if len(rule.src) == 1 and rule.src[0] == "student1@":
             rule.dst = ["10.20.3.0/24:*"]
-    result3 = checker.check(faulty3)
-    result3.report()
+    checker.check(faulty3).report()
 
     print()
-    print("TEST 4: Overly broad rule — student2 gets entire /16")
+    print("TEST 4: Overly broad rule — student2 gets a /23")
     faulty4 = copy.deepcopy(policy)
     for rule in faulty4.acls:
         if len(rule.src) == 1 and rule.src[0] == "student2@":
-            rule.dst = ["10.20.0.0/16:*"]
-    result4 = checker.check(faulty4)
-    result4.report()
+            rule.dst = ["10.20.3.0/23:*"]
+    checker.check(faulty4).report()
 
     print()
-    print("TEST 5: Privilege escalation — student4 points to management subnet")
+    print("TEST 5: Privilege escalation — student4 points to management /16")
     faulty5 = copy.deepcopy(policy)
     for rule in faulty5.acls:
         if len(rule.src) == 1 and rule.src[0] == "student4@":
             rule.dst = ["10.20.0.0/16:*"]
-    result5 = checker.check(faulty5)
-    result5.report()
+    checker.check(faulty5).report()
 
     print()
     print("TEST 6: Orphan rule — rule for a user not in DB")
@@ -314,5 +314,4 @@ if __name__ == "__main__":
         src=["ghost_user@"],
         dst=["10.20.99.0/24:*"]
     ))
-    result6 = checker.check(faulty6)
-    result6.report()
+    checker.check(faulty6).report()

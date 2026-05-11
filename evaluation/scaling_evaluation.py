@@ -20,7 +20,6 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 
 from synthetic_data.generator import generate_synthetic_db
-from acl_generator.generator import ACLGenerator
 from probe_generator.two_phase_generator import TwoPhaseProbeGenerator
 
 # --- Configuration ---
@@ -35,16 +34,10 @@ def collect_data():
 
     for n in N_VALUES:
         db = generate_synthetic_db(num_students=n - 1, num_instructors=1)
-        policy = ACLGenerator(db).generate()
-
-        user_subnet_map = {}
-        for user in db.get_active_users():
-            subnet = db.get_subnet_for_user(user.id)
-            if subnet:
-                user_subnet_map[user.headscale_username] = subnet.subnet_cidr
+        user_subnet_map = db.get_user_subnet_map()
 
         actual_n = len(user_subnet_map)
-        gen = TwoPhaseProbeGenerator(policy, user_subnet_map)
+        gen = TwoPhaseProbeGenerator(user_subnet_map)
 
         # Best case: no violations, Phase 2 never triggers
         probe_set_best = gen.generate(users_with_leaks=[])
