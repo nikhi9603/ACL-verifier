@@ -80,7 +80,7 @@ class TwoPhaseProbeSet:
 
 
 class TwoPhaseProbeGenerator:
-    HOST_OFFSET = 10
+    HOST_OFFSETS = [10,200]
 
     def __init__(self, user_subnet_map: dict):
         """
@@ -92,14 +92,14 @@ class TwoPhaseProbeGenerator:
         """
         self.user_subnet_map = user_subnet_map
 
-    def _representative_ip(self, subnet_cidr: str) -> str:
+    def _representative_ips(self, subnet_cidr: str) -> list[str]:
         """Return the .10 representative host IP for a subnet."""
         network = ipaddress.ip_network(subnet_cidr, strict=False)
-        return str(network.network_address + self.HOST_OFFSET)
+        return [str(network.network_address + offset) for offset in self.HOST_OFFSETS]
 
     def _src_ip_for_user(self, username: str) -> str:
         subnet = self.user_subnet_map.get(username)
-        return self._representative_ip(subnet) if subnet else "0.0.0.0"
+        return self._representative_ips(subnet)[0] if subnet else "0.0.0.0"
 
     def _get_user_subnets(self) -> list:
         """
@@ -115,19 +115,20 @@ class TwoPhaseProbeGenerator:
         probes = []
         for username, subnet in self.user_subnet_map.items():
             src_ip = self._src_ip_for_user(username)
-            dst_ip = self._representative_ip(subnet)
-            probes.append(Probe(
-                src_user=username, src_ip=src_ip, dst_ip=dst_ip,
-                dst_port=0, proto="icmp", expected=True, phase=0,
-                dst_user=username,
-                description=f"{username} -> own subnet {subnet} (should allow)"
-            ))
-            probes.append(Probe(
-                src_user=username, src_ip=src_ip, dst_ip=dst_ip,
-                dst_port=22, proto="tcp", expected=True, phase=0,
-                dst_user=username,
-                description=f"{username} -> own subnet {subnet}:22 (should allow)"
-            ))
+
+            for dst_ip in self._representative_ips(subnet):
+                probes.append(Probe(
+                    src_user=username, src_ip=src_ip, dst_ip=dst_ip,
+                    dst_port=0, proto="icmp", expected=True, phase=0,
+                    dst_user=username,
+                    description=f"{username} -> own subnet {subnet} (should allow)"
+                ))
+                probes.append(Probe(
+                    src_user=username, src_ip=src_ip, dst_ip=dst_ip,
+                    dst_port=22, proto="tcp", expected=True, phase=0,
+                    dst_user=username,
+                    description=f"{username} -> own subnet {subnet}:22 (should allow)"
+                ))
         return probes
 
     def generate_phase1_probes(self) -> list:
@@ -146,14 +147,14 @@ class TwoPhaseProbeGenerator:
             other_user, other_subnet = user_subnets[other_idx]
 
             src_ip = self._src_ip_for_user(username)
-            dst_ip = self._representative_ip(other_subnet)
-
-            probes.append(Probe(
-                src_user=username, src_ip=src_ip, dst_ip=dst_ip,
-                dst_port=0, proto="icmp", expected=False, phase=1,
-                dst_user=other_user,
-                description=f"{username} -> {other_subnet} (isolation sweep, should deny)"
-            ))
+            
+            for dst_ip in self._representative_ips(other_subnet):
+                probes.append(Probe(
+                    src_user=username, src_ip=src_ip, dst_ip=dst_ip,
+                    dst_port=0, proto="icmp", expected=False, phase=1,
+                    dst_user=other_user,
+                    description=f"{username} -> {other_subnet} (isolation sweep, should deny)"
+                ))
 
         return probes
 
@@ -173,13 +174,13 @@ class TwoPhaseProbeGenerator:
             for other_user, other_subnet in user_subnets:
                 if other_user == leaking_user:
                     continue
-                dst_ip = self._representative_ip(other_subnet)
-                probes.append(Probe(
-                    src_user=leaking_user, src_ip=src_ip, dst_ip=dst_ip,
-                    dst_port=0, proto="icmp", expected=False, phase=2,
-                    dst_user=other_user,
-                    description=f"{leaking_user} -> {other_subnet} (localisation, should deny)"
-                ))
+                for dst_ip in self._representative_ips(other_subnet):
+                    probes.append(Probe(
+                        src_user=leaking_user, src_ip=src_ip, dst_ip=dst_ip,
+                        dst_port=0, proto="icmp", expected=False, phase=2,
+                        dst_user=other_user,
+                        description=f"{leaking_user} -> {other_subnet} (localisation, should deny)"
+                    ))
 
         return probes
 
