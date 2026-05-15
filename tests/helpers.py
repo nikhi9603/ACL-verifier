@@ -2,11 +2,21 @@
 Shared test helper functions for the CyberRange ACL Verifier test suite.
 
 Import these directly in test files:
-    from tests.helpers import make_probe, set_dst_for, remove_rule_for, rule_for
+    from tests.helpers import make_gen, make_probe, set_dst_for, remove_rule_for, rule_for
 """
 
 import copy
 from models.policy import HeadscalePolicy, ACLRule
+
+
+def make_gen(policy, user_subnet_map):
+    """
+    Factory for TwoPhaseProbeGenerator.
+    policy param is kept for call-site compatibility but not passed to the
+    generator — TwoPhaseProbeGenerator takes only user_subnet_map (DB ground truth).
+    """
+    from probe_generator.two_phase_generator import TwoPhaseProbeGenerator
+    return TwoPhaseProbeGenerator(user_subnet_map)
 
 
 def make_probe(src_user, dst_ip, dst_port=0, proto="icmp",

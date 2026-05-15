@@ -236,7 +236,7 @@ class TestFaultInjection:
         """Full two-phase probe set against clean policy — every probe must PASS."""
         from probe_generator.two_phase_generator import TwoPhaseProbeGenerator
 
-        gen = TwoPhaseProbeGenerator(policy, user_subnet_map)
+        gen = TwoPhaseProbeGenerator(user_subnet_map)
         probe_set = gen.generate(users_with_leaks=[])
         executor = PolicyAwareExecutor(policy)
 

@@ -13,6 +13,7 @@ No network access. No SSH. No Headscale.
 """
 
 import copy
+from ipaddress import ip_network
 import pytest
 
 from probe_generator.two_phase_generator import TwoPhaseProbeGenerator, Probe
@@ -22,23 +23,26 @@ from tests.helpers import set_dst_for
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def make_gen(policy, user_subnet_map) -> TwoPhaseProbeGenerator:
-    return TwoPhaseProbeGenerator(policy, user_subnet_map)
+    return TwoPhaseProbeGenerator(user_subnet_map)
 
 
 # ── Probe counts ───────────────────────────────────────────────────────────────
 
 class TestProbeCounts:
-    def test_positive_probe_count_is_2n(self, policy, user_subnet_map):
+    def test_positive_probe_count_is_4n(self, policy, user_subnet_map):
+        """2 IPs × (ICMP + TCP:22) × N users = 4N positive probes."""
         n = len(user_subnet_map)
         gen = make_gen(policy, user_subnet_map)
-        assert len(gen.generate_positive_probes()) == 2 * n
+        assert len(gen.generate_positive_probes()) == 4 * n
 
-    def test_phase1_probe_count_is_n(self, policy, user_subnet_map):
+    def test_phase1_probe_count_is_2n(self, policy, user_subnet_map):
+        """2 representative IPs per tenant × N users = 2N Phase 1 probes."""
         n = len(user_subnet_map)
         gen = make_gen(policy, user_subnet_map)
-        assert len(gen.generate_phase1_probes()) == n
+        assert len(gen.generate_phase1_probes()) == 2 * n
 
-    def test_phase2_probe_count_is_k_times_n_minus_1(self, policy, user_subnet_map):
+    def test_phase2_probe_count_is_2k_times_n_minus_1(self, policy, user_subnet_map):
+        """2 IPs per target subnet × k leaking users × (N-1) other subnets."""
         n = len(user_subnet_map)
         users = list(user_subnet_map.keys())
 
@@ -46,22 +50,22 @@ class TestProbeCounts:
             leaking = users[:k]
             gen = make_gen(policy, user_subnet_map)
             phase2 = gen.generate_phase2_probes(leaking)
-            assert len(phase2) == k * (n - 1), \
-                f"k={k}, n={n}: expected {k*(n-1)} phase2 probes, got {len(phase2)}"
+            assert len(phase2) == 2 * k * (n - 1), \
+                f"k={k}, n={n}: expected {2*k*(n-1)} phase2 probes, got {len(phase2)}"
 
-    def test_best_case_total_is_3n(self, policy, user_subnet_map):
+    def test_best_case_total_is_6n(self, policy, user_subnet_map):
+        """Best case (no violations): 4N + 2N = 6N probes."""
         n = len(user_subnet_map)
         gen = make_gen(policy, user_subnet_map)
         probe_set = gen.generate(users_with_leaks=[])
-        total = len(probe_set.all_probes)
-        assert total == 3 * n
+        assert len(probe_set.all_probes) == 6 * n
 
-    def test_worst_case_total_is_2n_plus_n_times_n(self, policy, user_subnet_map):
+    def test_worst_case_total(self, policy, user_subnet_map):
+        """Worst case (all violated): 4N + 2N + 2N(N-1) probes."""
         n = len(user_subnet_map)
         gen = make_gen(policy, user_subnet_map)
         probe_set = gen.generate(users_with_leaks=list(user_subnet_map.keys()))
-        # 2N + N + N(N-1) = 2N + N² probes
-        expected_total = 2 * n + n + n * (n - 1)
+        expected_total = 4 * n + 2 * n + 2 * n * (n - 1)
         assert len(probe_set.all_probes) == expected_total
 
 
@@ -95,7 +99,7 @@ class TestSingleTenantEdgeCase:
         }
 
         gen = make_gen(policy1, user_subnet_map1)
-        assert len(gen.generate_positive_probes()) == 2  # 2N = 2×1
+        assert len(gen.generate_positive_probes()) == 4  # 4N = 4×1
 
 
 # ── Probe structure ────────────────────────────────────────────────────────────
@@ -145,10 +149,12 @@ class TestProbeStructure:
             assert probe.expected is False
 
     def test_positive_probes_include_icmp_and_tcp22(self, policy, user_subnet_map):
+        """Each user gets 4 positive probes: ICMP+TCP:22 at .10, ICMP+TCP:22 at .200."""
         gen = make_gen(policy, user_subnet_map)
         probes = gen.generate_positive_probes()
         for username in user_subnet_map:
             user_probes = [p for p in probes if p.src_user == username]
+            assert len(user_probes) == 4
             protos = {p.proto for p in user_probes}
             ports  = {p.dst_port for p in user_probes}
             assert "icmp" in protos
@@ -200,8 +206,9 @@ class TestACLIndependence:
         user_subnet_map (DB), never from the ACL's dst CIDRs.
         """
         valid_ips = {
-            cidr.rsplit(".", 1)[0] + ".10"
+            str(ip_network(cidr, strict=False).network_address + offset)
             for cidr in user_subnet_map.values()
+            for offset in [10, 200]
         }
         gen = make_gen(policy, user_subnet_map)
         probe_set = gen.generate(users_with_leaks=list(user_subnet_map.keys()))

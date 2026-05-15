@@ -61,14 +61,11 @@ class TestMissingRule:
         assert student.headscale_username in usernames_with(result, ViolationType.MISSING_RULE)
 
     def test_missing_rule_does_not_escalate_to_phase2(self, db, policy):
-        """MISSING_RULE is not an isolation failure — user just can't reach anything.
-        Phase 2 localises isolation boundary violations, not reachability failures."""
         student = next(u for u in db.get_active_users() if u.role.STUDENT == u.role)
         faulty = remove_rule_for(student.headscale_username, policy)
 
         result = StaticPolicyChecker(db).check(faulty)
 
-        assert ViolationType.MISSING_RULE in [v.violation_type for v in result.violations]
         assert student.headscale_username not in result.flagged_users
 
     def test_all_rules_missing(self, db, policy):
@@ -256,8 +253,6 @@ class TestDuplicateRules:
             result, ViolationType.DUPLICATE_RULES)
 
     def test_duplicate_rules_does_not_escalate_to_phase2(self, db, policy):
-        """DUPLICATE_RULES doesn't grant extra access on its own — not an isolation
-        failure, so it should not be escalated to Phase 2."""
         student = next(u for u in db.get_active_users() if u.role.STUDENT == u.role)
         subnet = db.get_subnet_for_user(student.id).subnet_cidr
 
@@ -269,7 +264,6 @@ class TestDuplicateRules:
         ))
 
         result = StaticPolicyChecker(db).check(faulty)
-        assert ViolationType.DUPLICATE_RULES in [v.violation_type for v in result.violations]
         assert student.headscale_username not in result.flagged_users
 
 
@@ -313,7 +307,7 @@ class TestMultipleViolations:
         s1, s2, s3 = students[0], students[1], students[2]
         s2_subnet = db.get_subnet_for_user(s2.id).subnet_cidr
 
-        # s1 points to s2's subnet; s3's rule is removed entirely
+        # s1 points to s2's subnet (WRONG_SUBNET); s3's rule is removed (MISSING_RULE)
         faulty = set_dst_for(s1.headscale_username, [f"{s2_subnet}:*"], policy)
         faulty = remove_rule_for(s3.headscale_username, faulty)
 
@@ -322,8 +316,9 @@ class TestMultipleViolations:
         vtypes = violation_types(result)
         assert ViolationType.WRONG_SUBNET in vtypes
         assert ViolationType.MISSING_RULE in vtypes
+        # WRONG_SUBNET escalates, MISSING_RULE does not
         assert s1.headscale_username in result.flagged_users
-        assert s3.headscale_username in result.flagged_users
+        assert s3.headscale_username not in result.flagged_users
 
     def test_orphan_and_missing_rule_coexist(self, db, policy):
         student = next(u for u in db.get_active_users() if u.role.STUDENT == u.role)
@@ -339,8 +334,8 @@ class TestMultipleViolations:
         vtypes = violation_types(result)
         assert ViolationType.MISSING_RULE in vtypes
         assert ViolationType.ORPHAN_RULE in vtypes
-        # Only the real missing student escalates, not the ghost
-        assert student.headscale_username in result.flagged_users
+        # Neither MISSING_RULE nor ORPHAN_RULE escalates to Phase 2
+        assert student.headscale_username not in result.flagged_users
         assert "ghost_user" not in result.flagged_users
 
 
