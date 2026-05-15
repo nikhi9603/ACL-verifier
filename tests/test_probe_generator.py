@@ -2,7 +2,7 @@
 Tests for TwoPhaseProbeGenerator.
 
 Validates:
-  - Correct probe counts (2N positive, N phase1, k(N-1) phase2)
+  - Correct probe counts (4N positive, 2N phase1, 2k(N-1) phase2)
   - Probe structure (phase tags, expected flags, src/dst assignment)
   - Probes are generated from DB ground truth, NOT from the ACL
   - N=1 edge case: Phase 1 must return empty (no other tenant to probe against)

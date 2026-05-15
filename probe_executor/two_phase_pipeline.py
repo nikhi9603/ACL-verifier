@@ -175,7 +175,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 65)
-    print("TEST 2: Overly broad rule — student2 gets full management subnet")
+    print("TEST 2: Privilege Escalation rule — student2 gets full management subnet")
     print("=" * 65)
     faulty = copy.deepcopy(policy)
     for rule in faulty.acls:
@@ -192,3 +192,13 @@ if __name__ == "__main__":
         if len(rule.src) == 1 and rule.src[0] == "student1@":
             rule.dst = ["10.20.3.0/24:*"]
     TwoPhasePipeline(faulty3, db).run()
+
+    print()
+    print("=" * 65)
+    print("TEST 4: Narrow rule - student1 points to its own subnet partially")
+    print("=" * 65)
+    faulty4 = copy.deepcopy(policy)
+    for rule in faulty4.acls:
+        if len(rule.src) == 1 and rule.src[0] == "student1@":
+            rule.dst = ["10.20.2.128/30:*"]
+    TwoPhasePipeline(faulty4, db).run()

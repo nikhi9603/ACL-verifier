@@ -10,6 +10,7 @@ WITHOUT running any probes. Catches violations that are structurally visible:
   DUPLICATE_RULES      — user has more than one ACL rule
   PRIVILEGE_ESCALATION — non-admin user has a rule covering the management subnet
   ORPHAN_RULE          — ACL rule references a user not in the DB
+  NARROW_RULE          — user's ACL rule covers less than their /24 (eg: /27)
 
 Phase 2 escalation policy (StaticCheckResult.flagged_users):
   WRONG_SUBNET, OVERLY_BROAD_RULE, PRIVILEGE_ESCALATION → escalated to Phase 2
@@ -18,6 +19,8 @@ Phase 2 escalation policy (StaticCheckResult.flagged_users):
      duplicate rule = doesn't grant extra access on its own)
   ORPHAN_RULE                                           → NOT escalated
     (references a non-existent user — no router to SSH into)
+  NARROW_RULE                                           → NOT escalated
+  (Narrow rules are checked after WRONG_SUBNET detection. Remaining cases only reduce to reachability within the tenant's own subnet and are not isolation leaks to escalate to Phase 2)
 """
 
 import ipaddress
@@ -68,12 +71,12 @@ class StaticCheckResult:
           MISSING_RULE    — user can't reach anything; not an isolation leak
           DUPLICATE_RULES — doesn't grant extra access on its own
           ORPHAN_RULE     — references a non-existent user; no router to probe
+          NARROW_RULE     — checked after WRONG_SUBNET detection. Remaining cases only reduce to reachability within the tenant's own subnet; not an isolation leak
         """
         escalate_types = {
             ViolationType.WRONG_SUBNET,
             ViolationType.OVERLY_BROAD_RULE,
             ViolationType.PRIVILEGE_ESCALATION,
-            # ViolationType.NARROW_RULE,    # narrow subnet violation is checked after wrong subnet: so only reachability violations within the tenant subnet comes under this. And not isolation violations to be escalated to phase2
         }
         seen = set()
         users = []

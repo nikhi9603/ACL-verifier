@@ -2,21 +2,26 @@
 Two-Phase Adaptive Probe Generator.
 
 Phase 1 — O(N) sweep:
-  For each user, send one negative probe to any other tenant's subnet.
+  For each user, send representative negative probes to another tenant's subnet.
   Identifies WHICH users have an isolation leak, cheaply.
 
 Phase 2 — Targeted localisation:
-  Only for users who failed Phase 1, send N-1 directed probes
+  Only for users who failed Phase 1, send directed probes
   to identify exactly WHICH boundary is violated.
 
+Representative probing:
+  Probes use two representative subnet hosts: .10 and .200.
+  Their separation guarantees that any sub-/24 narrow rule
+  cannot simultaneously permit both addresses.
+
 Probe counts:
-  Positive:        2N  (ICMP + TCP:22 per user)
-  Phase 1 neg:     N   (one per user)
-  Phase 2 neg:     k(N-1) where k = number of users who failed Phase 1
+  Positive:        4N          (ICMP + TCP:22 to .10 and .200)
+  Phase 1 neg:     2N          (two representative isolation probes per user)
+  Phase 2 neg:     2k(N-1)     where k = number of users escalated
   ---
-  Best case:       2N + N = 3N      (no violations, Phase 2 never runs)
-  Worst case:      2N + N + N(N-1)  (all users violated)
-  Typical case:    2N + N + k(N-1)  (k violations, k << N)
+  Best case:       6N
+  Worst case:      4N + 2N + 2N(N-1)
+  Typical case:    4N + 2N + 2k(N-1)   where k << N
 
 IMPORTANT — probes are generated from user_subnet_map (DB ground truth), NOT
 from the ACL. A buggy ACL cannot influence which probes are generated or what
@@ -68,21 +73,21 @@ class TwoPhaseProbeSet:
         print(f"Two-Phase Probe Set Summary")
         print(f"{'=' * 55}")
         print(f"Users/tenants (N):         {n_users}")
-        print(f"Positive probes (2N):      {len(self.positive_probes)}")
-        print(f"Phase 1 probes (N):        {len(self.phase1_probes)}")
-        print(f"Phase 2 probes k(N-1):     {len(self.phase2_probes)}")
+        print(f"Positive probes (4N):      {len(self.positive_probes)}")
+        print(f"Phase 1 probes (2N):        {len(self.phase1_probes)}")
+        print(f"Phase 2 probes 2k(N-1):     {len(self.phase2_probes)}")
         print(f"Total (this run):          {our_worst_case}")
         print(f"Naive exhaustive (H²×N(N-1)): {naive_exhaustive:,}")
         print(f"Reduction factor:          {naive_exhaustive / max(our_worst_case, 1):,.0f}x")
         print()
-        print(f"Best case  (k=0): {len(self.positive_probes) + len(self.phase1_probes)} probes (3N)")
+        print(f"Best case  (k=0): {len(self.positive_probes) + len(self.phase1_probes)} probes (6N)")
         print(f"Worst case (k=N): {len(self.positive_probes) + len(self.phase1_probes) + n_users * (n_users - 1)} probes (2N + N(N-1))")
 
 
 class TwoPhaseProbeGenerator:
     HOST_OFFSETS = [10,200]
 
-    def __init__(self, user_subnet_map: dict):
+    def __init__(self, policy, user_subnet_map: dict):
         """
         Args:
             user_subnet_map: headscale_username → subnet_cidr, from DB ground truth.
@@ -93,7 +98,7 @@ class TwoPhaseProbeGenerator:
         self.user_subnet_map = user_subnet_map
 
     def _representative_ips(self, subnet_cidr: str) -> list[str]:
-        """Return the .10 representative host IP for a subnet."""
+        """Return representative host IPs (.10 and .200) for a subnet."""
         network = ipaddress.ip_network(subnet_cidr, strict=False)
         return [str(network.network_address + offset) for offset in self.HOST_OFFSETS]
 
@@ -111,7 +116,7 @@ class TwoPhaseProbeGenerator:
         return list(self.user_subnet_map.items())
 
     def generate_positive_probes(self) -> list:
-        """2N positive probes — one ICMP + one TCP:22 per user."""
+        """4N positive probes — one ICMP + one TCP:22 per user for each representative dest IP"""
         probes = []
         for username, subnet in self.user_subnet_map.items():
             src_ip = self._src_ip_for_user(username)
@@ -132,7 +137,7 @@ class TwoPhaseProbeGenerator:
         return probes
 
     def generate_phase1_probes(self) -> list:
-        """N Phase 1 probes — one per user to ANY other tenant's subnet.
+        """2N Phase 1 probes — one user probes another tenant's .10 and .200 representatives.
 
         Returns empty list if N < 2 — Phase 1 requires at least 2 tenants.
         """
@@ -159,7 +164,7 @@ class TwoPhaseProbeGenerator:
         return probes
 
     def generate_phase2_probes(self, users_with_leaks: list) -> list:
-        """Phase 2 — k(N-1) targeted probes.
+        """Phase 2 — 2k(N-1) targeted probes using .10 and .200 representatives.
 
         Only generated for users who failed Phase 1 or were flagged by the
         static checker. Tests ALL other subnets to localise exactly which

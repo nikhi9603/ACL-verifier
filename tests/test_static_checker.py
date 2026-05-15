@@ -298,6 +298,9 @@ class TestOrphanRule:
         result = StaticPolicyChecker(db).check(faulty)
         assert "ghost_user" not in result.flagged_users
 
+# ── NARROW_RULE ────────────────────────────────────────────────────────────────
+# class TestNarrowRule:
+#     def tesr_narrow_rule_
 
 # ── Multiple violations ────────────────────────────────────────────────────────
 
