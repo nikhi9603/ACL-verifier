@@ -37,6 +37,7 @@ class ViolationType(str, Enum):
     DUPLICATE_RULES      = "DUPLICATE_RULES"
     PRIVILEGE_ESCALATION = "PRIVILEGE_ESCALATION"
     ORPHAN_RULE          = "ORPHAN_RULE"
+    NARROW_RULE          = "NARROW_RULE"
 
 
 @dataclass
@@ -72,6 +73,7 @@ class StaticCheckResult:
             ViolationType.WRONG_SUBNET,
             ViolationType.OVERLY_BROAD_RULE,
             ViolationType.PRIVILEGE_ESCALATION,
+            # ViolationType.NARROW_RULE,    # narrow subnet violation is checked after wrong subnet: so only reachability violations within the tenant subnet comes under this. And not isolation violations to be escalated to phase2
         }
         seen = set()
         users = []
@@ -106,6 +108,7 @@ class StaticCheckResult:
             ViolationType.OVERLY_BROAD_RULE,
             ViolationType.WRONG_SUBNET,
             ViolationType.MISSING_RULE,
+            ViolationType.NARROW_RULE,
             ViolationType.DUPLICATE_RULES,
             ViolationType.ORPHAN_RULE,
         ]
@@ -250,13 +253,25 @@ class StaticPolicyChecker:
                         ))
                         continue
 
+                    rule_net = ipaddress.IPv4Network(cidr, strict=False)
+                    expected_net = ipaddress.IPv4Network(expected_subnet, strict=False)
                     # Check 6: WRONG_SUBNET
-                    if expected_subnet and cidr != expected_subnet:
+                    if expected_net and rule_net.network_address != expected_net.network_address:
                         result.violations.append(StaticViolation(
                             violation_type=ViolationType.WRONG_SUBNET,
                             username=username,
                             detail=(f"Rule points to {cidr} but DB assigns "
                                     f"{expected_subnet} to this user")
+                        ))
+                        continue
+                    
+                    # Check 7: NARROW_RULE
+                    if self._cidr_prefix_len(cidr) > 24:
+                        result.violations.append(StaticViolation(
+                            violation_type=ViolationType.NARROW_RULE,
+                            username=username,
+                            detail=(f"Rule destination {cidr} is narrower than /24 — "
+                                    f"may partial cover the tenant subnet")
                         ))
 
         return result
@@ -315,3 +330,11 @@ if __name__ == "__main__":
         dst=["10.20.99.0/24:*"]
     ))
     checker.check(faulty6).report()
+
+    print()
+    print("TEST 7: Narrow rule — student1 gets a /28")
+    faulty7 = copy.deepcopy(policy)
+    for rule in faulty7.acls:
+        if len(rule.src) == 1 and rule.src[0] == "student1@":
+            rule.dst = ["10.20.2.0/28:*"]
+    checker.check(faulty7).report()
