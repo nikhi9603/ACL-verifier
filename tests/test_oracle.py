@@ -232,6 +232,20 @@ class TestFaultInjection:
         assert outcome.result == ProbeResult.FAIL
         assert outcome.observed is True
 
+    def test_narrow_rule_pointing_to_own_subnet_partially(self, db, policy):
+        """ student2 points to its own subnet partially - reachability violation - should be caught by one of its positive probe for all narrow cases """
+        students = [u for u in db.get_active_users() if u.role.STUDENT == u.role]
+        s1 = students[0]
+        s1_subnet = db.get_subnet_for_user(s1.id).subnet_cidr
+        s1_subnet_modified = s1_subnet.replace(".0/24", ".0/28")
+
+        faulty = set_dst_for(s1.headscale_username, [f"{s1_subnet_modified}:*"], policy)
+        ip1 = s1_subnet.replace(".0/24", ".200")
+        outcome = run_single(faulty, s1.headscale_username, ip1, expected=True, phase=0)
+
+        assert outcome.result == ProbeResult.FAIL
+        assert outcome.observed is False
+
     def test_clean_policy_all_probes_pass(self, db, policy, user_subnet_map):
         """Full two-phase probe set against clean policy — every probe must PASS."""
         from probe_generator.two_phase_generator import TwoPhaseProbeGenerator

@@ -101,7 +101,7 @@ def plot_all(results):
     # --- Plot 2: Probe count breakdown (stacked) ---
     ax2 = fig.add_subplot(gs[0, 1])
     ax2.stackplot(ns, positive, phase1, phase2_worst,
-                  labels=['Positive (2N)', 'Phase 1 (N)', 'Phase 2 worst case k(N-1)'],
+                  labels=['Positive (4N)', 'Phase 1 (2N)', 'Phase 2 worst case 2k(N-1)'],
                   colors=['#2ecc71', '#3498db', '#e74c3c'], alpha=0.8)
     ax2.set_xlabel('Number of tenants (N)')
     ax2.set_ylabel('Probe count')
@@ -127,12 +127,12 @@ def plot_all(results):
     ax4 = fig.add_subplot(gs[1, 1])
     n_fixed = 255
     k_values = list(range(0, n_fixed + 1, 10))
-    phase2_counts = [k * (n_fixed - 1) for k in k_values]
-    total_counts = [(2 * n_fixed + n_fixed + k * (n_fixed - 1)) for k in k_values]
-    ax4.plot(k_values, phase2_counts, 'r-', label='Phase 2 probes k(N-1)', linewidth=2)
+    phase2_counts = [2* k * (n_fixed - 1) for k in k_values]
+    total_counts = [(4 * n_fixed + 2 * n_fixed + 2 * k * (n_fixed - 1)) for k in k_values]
+    ax4.plot(k_values, phase2_counts, 'r-', label='Phase 2 probes 2k(N-1)', linewidth=2)
     ax4.plot(k_values, total_counts, 'b--', label='Total probes', linewidth=2)
     ax4.axhline(y=2 * n_fixed + n_fixed, color='g', linestyle=':', linewidth=2,
-                label=f'Best case (3N={3*n_fixed})')
+                label=f'Best case (6N={6*n_fixed})')
     ax4.set_xlabel('Users with violations (k)')
     ax4.set_ylabel('Probe count')
     ax4.set_title(f'Phase 2 Growth vs Violations (N={n_fixed})')

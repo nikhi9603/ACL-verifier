@@ -8,7 +8,7 @@ Automated verification engine for **Headscale ACL policies** in the CySTAR multi
 
 In a multi-tenant cyber range, every student gets an isolated `/24` subnet and a dedicated subnet router. A single misconfigured ACL rule — a student pointing to another tenant's subnet, a `/16` instead of a `/24`, a missing rule — can silently break isolation or deny a student access to their own lab. With N tenants, exhaustive network probing requires O(N²·H²) probes (where H = 254 usable IPs per subnet). At N=255 that's over 4 billion probes.
 
-This tool verifies the same invariants in **3N probes** in the best case.
+This tool verifies the same invariants in **6N probes** in the best case.
 
 ---
 
@@ -31,7 +31,7 @@ Structural diff of the ACL against the database. No network access, no SSH. Catc
 
 `WRONG_SUBNET` in particular is invisible to dynamic probing — a user pointing to a non-existent subnet shows zero peers in Phase 1, which looks clean. The static checker catches it before a single SSH call is made.
 
-### Stage 1 — Phase 1 Canary Sweep (O(N))
+### Stage 1 — Phase 1 Sweep (O(N))
 
 Each router SSHes into its subnet router and runs `tailscale status`. If a peer that should be absent appears in the output, that's an isolation leak. One SSH call per router, results cached.
 
@@ -45,11 +45,11 @@ Only triggered for users who failed Phase 1 or were flagged by the static checke
 
 | Scenario                        | Probes        |
 | ------------------------------- | ------------- |
-| Best case (no violations)       | 3N            |
-| Typical (k violations, k ≪ N)   | 3N + k(N-1)   |
-| Worst case (all users violated) | 2N + N²       |
+| Best case (no violations)       | 6N            |
+| Typical (k violations, k ≪ N)   | 6N + 2k(N-1) |
+| Worst case (all users violated) | 4N + 2N²      |
 | Naive exhaustive baseline       | 254² × N(N-1) |
-| Reduction at N=255              | ~5.4 million× |
+| Reduction at N=255(best case)   | ~2.7 million× |
 
 ![Scaling Evaluation](evaluation/scaling_evaluation.png)
 

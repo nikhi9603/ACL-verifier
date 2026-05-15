@@ -81,13 +81,13 @@ class TwoPhaseProbeSet:
         print(f"Reduction factor:          {naive_exhaustive / max(our_worst_case, 1):,.0f}x")
         print()
         print(f"Best case  (k=0): {len(self.positive_probes) + len(self.phase1_probes)} probes (6N)")
-        print(f"Worst case (k=N): {len(self.positive_probes) + len(self.phase1_probes) + n_users * (n_users - 1)} probes (2N + N(N-1))")
+        print(f"Worst case (k=N): {len(self.positive_probes) + len(self.phase1_probes) + 2 * n_users * (n_users - 1)} probes (2N + 2N(N-1))")
 
 
 class TwoPhaseProbeGenerator:
     HOST_OFFSETS = [10,200]
 
-    def __init__(self, policy, user_subnet_map: dict):
+    def __init__(self, user_subnet_map: dict):
         """
         Args:
             user_subnet_map: headscale_username → subnet_cidr, from DB ground truth.

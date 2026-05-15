@@ -17,6 +17,7 @@ No network access. No SSH. No Headscale.
 
 import copy
 import pytest
+import ipaddress
 
 from static_policy_checker.policy_checker import StaticPolicyChecker, ViolationType
 from models.policy import ACLRule
@@ -153,6 +154,21 @@ class TestWrongSubnet:
     def test_correct_subnet_no_wrong_subnet_violation(self, db, policy):
         result = StaticPolicyChecker(db).check(policy)
         assert ViolationType.WRONG_SUBNET not in violation_types(result)
+
+    def test_wrong_subnet_with_narrow_rule_violation(self, db, policy):
+        """ User points to wrong subnet but with narrow rule i.e. partial reachability - still classified as wrong subnet and not narrow rule """
+        users = db.get_active_users()
+        students = [u for u in users if u.role.STUDENT == u.role]
+        s1, s2 = students[0], students[1]
+        s2_subnet = ipaddress.IPv4Network(db.get_subnet_for_user(s2.id).subnet_cidr)
+        s2_subnet_address = s2_subnet.network_address
+        faulty_prefix_length = 27 # > 24 for narrow rule
+        faulty_subnet = ipaddress.ip_network(f"{s2_subnet_address}/{faulty_prefix_length}")
+        faulty = set_dst_for(s1.headscale_username, [f"{faulty_subnet}:*"], policy)
+
+        result = StaticPolicyChecker(db).check(faulty)
+        assert ViolationType.WRONG_SUBNET in violation_types(result) and not ViolationType.NARROW_RULE in violation_types(result)
+        assert s1.headscale_username in usernames_with(result, ViolationType.WRONG_SUBNET)
 
 
 # ── OVERLY_BROAD_RULE ──────────────────────────────────────────────────────────
@@ -299,8 +315,36 @@ class TestOrphanRule:
         assert "ghost_user" not in result.flagged_users
 
 # ── NARROW_RULE ────────────────────────────────────────────────────────────────
-# class TestNarrowRule:
-#     def tesr_narrow_rule_
+class TestNarrowRule:
+    def test_narrow_rule_user_reaching_own_subnet_partially(self, db, policy):
+        users = db.get_active_users()
+        non_admin_users = [u for u in users if u.role != u.role.ADMIN]
+        s1 = non_admin_users[0]
+        s1_subnet = ipaddress.IPv4Network(db.get_subnet_for_user(s1.id).subnet_cidr)
+        s1_subnet_address = s1_subnet.network_address
+        faulty_prefix_length = 30 # > 24 for narrow rule
+        faulty_subnet = ipaddress.ip_network(f"{s1_subnet_address}/{faulty_prefix_length}")
+        faulty = set_dst_for(s1.headscale_username, [f"{faulty_subnet}:*"], policy)
+
+        result = StaticPolicyChecker(db).check(faulty)
+        assert ViolationType.NARROW_RULE in violation_types(result)
+        assert s1.headscale_username in usernames_with(result, ViolationType.NARROW_RULE)
+
+    def test_narrow_rule_not_escalate_phase2(self, db, policy):
+        """
+        Narrow rules are checked after WRONG_SUBNET detection. Remaining cases only reduce to reachability within the tenant's own subnet and are not isolation leaks to escalate to Phase 2
+        """
+        users = db.get_active_users()
+        non_admin_users = [u for u in users if u.role != u.role.ADMIN]
+        s1 = non_admin_users[0]
+        s1_subnet = ipaddress.IPv4Network(db.get_subnet_for_user(s1.id).subnet_cidr)
+        s1_subnet_address = s1_subnet.network_address
+        faulty_prefix_length = 30 # > 24 for narrow rule
+        faulty_subnet = ipaddress.ip_network(f"{s1_subnet_address}/{faulty_prefix_length}")
+        faulty = set_dst_for(s1.headscale_username, [f"{faulty_subnet}:*"], policy)
+
+        result = StaticPolicyChecker(db).check(faulty)
+        assert s1.headscale_username not in result.flagged_users
 
 # ── Multiple violations ────────────────────────────────────────────────────────
 

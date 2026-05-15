@@ -43,7 +43,7 @@ class TwoPhasePipeline:
 
         # --- Stage 0: Static policy check ---
         # Catches structural violations (WRONG_SUBNET, OVERLY_BROAD_RULE,
-        # PRIVILEGE_ESCALATION, MISSING_RULE, DUPLICATE_RULES, ORPHAN_RULE)
+        # PRIVILEGE_ESCALATION, MISSING_RULE, DUPLICATE_RULES, ORPHAN_RULE, NARROW_RULE)
         # without touching the network. Flagged users are escalated to Phase 2
         # even if Phase 1 passes — this is the only way to catch WRONG_SUBNET
         # (a user pointing to a non-existent subnet shows 0 peers in Phase 1,
@@ -93,7 +93,7 @@ class TwoPhasePipeline:
             self.reporter.report(phase1_outcomes)
 
         # Merge Phase 1 failures + static checker flagged users for Phase 2.
-        # MISSING_RULE and DUPLICATE_RULES are excluded from static_flagged
+        # MISSING_RULE and DUPLICATE_RULE, NARROW_RULES are excluded from static_flagged
         # (see StaticCheckResult.flagged_users) — they don't cause isolation
         # failures so there's nothing for Phase 2 to localise.
         users_with_leaks = list(phase1_flagged | static_flagged)
